@@ -1,1 +1,91 @@
 
+-- Create a reporting view that summarizes product performance
+CREATE VIEW gold.report_products AS
+
+-- Step 1: prepare the base dataset by combining sales with product details
+WITH base_query AS (
+    SELECT 
+        f.order_nuber AS order_number, -- unique order ID (renamed for clarity)
+        f.order_date,                 -- date of the order
+        f.customer_key,               -- customer who made the purchase
+        f.sales_amount,               -- revenue from the order
+        f.quantity,                  -- quantity sold
+        p.product_key,               -- product ID
+        p.product_name,              -- product name
+        p.category,                  -- high-level category
+        p.subcategory,               -- more detailed grouping
+        p.cost                       -- product cost
+    FROM gold.face_sales f
+    LEFT JOIN gold.dim_products p
+        ON p.product_key = f.product_key
+),
+
+-- Step 2: aggregate metrics at the product level
+product_aggregation AS (
+    SELECT
+        product_key,
+        product_name,
+        category,
+        subcategory,
+        cost,
+
+        -- active selling period in months
+        DATEDIFF(MONTH, MIN(order_date), MAX(order_date)) AS lifespan,
+
+        MAX(order_date) AS last_sale_date,             -- most recent sale
+        COUNT(DISTINCT order_number) AS total_orders,  -- number of orders
+        COUNT(DISTINCT customer_key) AS total_customers, -- unique buyers
+
+        SUM(sales_amount) AS total_sales,              -- total revenue
+        SUM(quantity) AS total_quantity,               -- total units sold
+
+        -- average selling price per unit (safe division)
+        ROUND(AVG(CAST(sales_amount AS FLOAT) / NULLIF(quantity, 0)), 1) AS avg_selling_price
+    FROM base_query
+    GROUP BY 
+        product_key,
+        product_name,
+        category,
+        subcategory,
+        cost
+)
+
+-- Step 3: derive product performance metrics and segments
+SELECT 
+    product_key,
+    product_name,
+    category,
+    subcategory,
+    cost,
+    last_sale_date,
+
+    -- how long since the product was last sold
+    DATEDIFF(MONTH, last_sale_date, GETDATE()) AS receny_in_months,
+
+    -- classify products based on total revenue
+    CASE 
+        WHEN total_sales > 50000 THEN 'High-Performer'
+        WHEN total_sales >= 10000 THEN 'Mid-Range'
+        ELSE 'Low-Performer'
+    END AS product_segment,
+
+    lifespan,
+    total_orders,
+    total_sales,
+    total_quantity,
+    total_customers,
+    avg_selling_price,
+
+    -- average revenue per order
+    CASE 
+        WHEN total_orders = 0 THEN 0
+        ELSE total_sales / total_orders
+    END AS avg_order_revenue,
+
+    -- average monthly revenue (handle short lifespan)
+    CASE 
+        WHEN lifespan = 0 THEN total_sales
+        ELSE total_sales / lifespan
+    END AS avg_monthly_sales
+
+FROM product_aggregation;
