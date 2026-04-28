@@ -1,1 +1,89 @@
 
+-- Create a reporting view that summarizes customer behavior and value
+CREATE VIEW gold.report_customers AS
+
+-- First step: prepare the base dataset by joining sales with customer info
+WITH base_query AS (
+    SELECT 
+        f.order_nuber,          -- unique order identifier
+        f.product_key,          -- product involved in the order
+        f.order_date,           -- date of the order
+        f.sales_amount,         -- revenue generated from the order
+        f.quantity,             -- number of items sold
+        c.customer_key,         -- internal customer ID
+        c.customer_number,      -- business/customer-facing ID
+        CONCAT(c.first_name, ' ', c.last_name) AS customer_name, -- full name
+        DATEDIFF(YEAR, c.brithdate, GETDATE()) AS age            -- approximate age
+    FROM gold.face_sales f
+    LEFT JOIN gold.dim_cusomers c
+        ON f.customer_key = c.customer_key
+    WHERE order_date IS NOT NULL   -- ignore records without a valid order date
+),
+
+-- Second step: aggregate metrics at the customer level
+customer_aggregation AS (
+    SELECT 
+        customer_key,
+        customer_number,
+        customer_name,
+        age,
+        COUNT(DISTINCT order_nuber) AS total_orders,   -- number of unique orders
+        SUM(sales_amount) AS total_sales,              -- total revenue per customer
+        SUM(quantity) AS total_quantity,               -- total items purchased
+        COUNT(DISTINCT product_key) AS total_products, -- number of different products
+        MAX(order_date) AS last_order_date,            -- most recent purchase
+        DATEDIFF(MONTH, MIN(order_date), MAX(order_date)) AS lifespan -- active period in months
+    FROM base_query
+    GROUP BY 
+        customer_key,
+        customer_number,
+        customer_name,
+        age
+)
+
+-- Final step: derive segments and additional business metrics
+SELECT 
+    customer_key,
+    customer_number,
+    customer_name,
+    age,
+
+    -- Group customers into age brackets
+    CASE 
+        WHEN age < 20 THEN 'under 20'
+        WHEN age BETWEEN 20 AND 29 THEN '20-29'
+        WHEN age BETWEEN 40 AND 49 THEN '40-49'
+        ELSE '50 or above'
+    END AS age_group,
+
+    -- Segment customers based on lifespan and spending
+    CASE 
+        WHEN lifespan >= 12 AND total_sales > 5000 THEN 'VIP'
+        WHEN lifespan >= 12 AND total_sales <= 5000 THEN 'Regular'
+        ELSE 'New'
+    END AS customer_segment,
+
+    last_order_date,
+
+    -- Recency: how many months since last order
+    DATEDIFF(MONTH, last_order_date, GETDATE()) AS recency,
+
+    total_orders,
+    total_sales,
+    total_quantity,
+    total_products,
+    lifespan,
+
+    -- Average order value (avoid division by zero)
+    CASE 
+        WHEN total_sales = 0 THEN 0
+        ELSE total_sales / total_orders
+    END AS avg_order_value,
+
+    -- Average monthly sales (handle single-month customers)
+    CASE 
+        WHEN lifespan = 0 THEN total_sales
+        ELSE total_sales / lifespan
+    END AS avg_monthly_sales
+
+FROM customer_aggregation;
